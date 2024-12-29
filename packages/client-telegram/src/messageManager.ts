@@ -638,6 +638,11 @@ export class MessageManager {
             modelClass: ModelClass.LARGE,
         });
 
+        // We need to ensure the action is preserved here
+        if (message.content.action) {
+            response.action = message.content.action;
+        }
+
         if (!response) {
             console.error("❌ No response from generateMessageResponse");
             return null;
@@ -851,6 +856,7 @@ export class MessageManager {
             const content: Content = {
                 text: fullText,
                 source: "telegram",
+                ctx: ctx,
                 inReplyTo:
                     "reply_to_message" in message && message.reply_to_message
                         ? stringToUuid(

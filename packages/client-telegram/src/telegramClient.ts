@@ -1,11 +1,12 @@
 import { Context, Telegraf } from "telegraf";
 import { message } from 'telegraf/filters';
-import { IAgentRuntime, elizaLogger } from "@ai16z/eliza";
+import { IAgentRuntime, elizaLogger, Memory, stringToUuid, getEmbeddingZeroVector, Content, HandlerCallback } from "@ai16z/eliza";
 import { MessageManager } from "./messageManager.ts";
 import { getOrCreateRecommenderInBe } from "./getOrCreateRecommenderInBe.ts";
+import { sendPoll } from "./actions/sendPoll.ts"; // Change from default to named import
 
 export class TelegramClient {
-    private bot: Telegraf<Context>;
+    private botInstance: Telegraf<Context>;
     private runtime: IAgentRuntime;
     private messageManager: MessageManager;
     private backend;
@@ -15,12 +16,16 @@ export class TelegramClient {
     constructor(runtime: IAgentRuntime, botToken: string) {
         elizaLogger.log("📱 Constructing new TelegramClient...");
         this.runtime = runtime;
-        this.bot = new Telegraf(botToken);
-        this.messageManager = new MessageManager(this.bot, this.runtime);
+        this.botInstance = new Telegraf(botToken);
+        this.messageManager = new MessageManager(this.botInstance, this.runtime);
         this.backend = runtime.getSetting("BACKEND_URL");
         this.backendToken = runtime.getSetting("BACKEND_TOKEN");
         this.tgTrader = runtime.getSetting("TG_TRADER"); // boolean To Be added to the settings
         elizaLogger.log("✅ TelegramClient constructor completed");
+    }
+
+    public get bot(): Telegraf<Context> {
+        return this.botInstance;
     }
 
     public async start(): Promise<void> {
@@ -29,6 +34,12 @@ export class TelegramClient {
             await this.initializeBot();
             this.setupMessageHandlers();
             this.setupShutdownHandlers();
+
+            // Register the action
+            elizaLogger.info("Registering SEND_POLL action...");
+            this.runtime.registerAction(sendPoll);
+            elizaLogger.info("SEND_POLL action registered successfully");
+
         } catch (error) {
             elizaLogger.error("❌ Failed to launch Telegram bot:", error);
             throw error;
@@ -36,16 +47,16 @@ export class TelegramClient {
     }
 
     private async initializeBot(): Promise<void> {
-        this.bot.launch({ dropPendingUpdates: true });
+        this.botInstance.launch({ dropPendingUpdates: true });
         elizaLogger.log(
             "✨ Telegram bot successfully launched and is running!"
         );
 
-        const botInfo = await this.bot.telegram.getMe();
-        this.bot.botInfo = botInfo;
+        const botInfo = await this.botInstance.telegram.getMe();
+        this.botInstance.botInfo = botInfo;
         elizaLogger.success(`Bot username: @${botInfo.username}`);
 
-        this.messageManager.bot = this.bot;
+        this.messageManager.bot = this.botInstance;
     }
 
     private async isGroupAuthorized(ctx: Context): Promise<boolean> {
@@ -78,7 +89,7 @@ export class TelegramClient {
     private setupMessageHandlers(): void {
         elizaLogger.log("Setting up message handler...");
 
-        this.bot.on(message('new_chat_members'), async (ctx) => {
+        this.botInstance.on(message('new_chat_members'), async (ctx) => {
             try {
                 const newMembers = ctx.message.new_chat_members;
                 const isBotAdded = newMembers.some(member => member.id === ctx.botInfo.id);
@@ -90,8 +101,48 @@ export class TelegramClient {
                 elizaLogger.error("Error handling new chat members:", error);
             }
         });
+        //inja
+        this.botInstance.command('poll', async (ctx) => {
+            try {
+                elizaLogger.info('Received /poll command');
 
-        this.bot.on("message", async (ctx) => {
+                const message: Memory = {
+                    id: stringToUuid(ctx.message.message_id.toString()),
+                    userId: stringToUuid(ctx.from.id.toString()),
+                    roomId: stringToUuid(ctx.chat.id.toString()),
+                    agentId: this.runtime.agentId,
+                    content: {
+                        text: ctx.message.text,
+                        ctx,
+                        source: 'telegram',
+                        action: 'SEND_POLL'  // Explicitly set the action
+                    },
+                    createdAt: Date.now(),
+                    embedding: getEmbeddingZeroVector()
+                };
+
+                elizaLogger.debug('Created memory object for poll:', message);
+
+                // Create initial state with SEND_POLL action
+                const state = await this.runtime.composeState(message);
+                state.currentAction = 'SEND_POLL';  // Set the action in state
+
+                // Call the action handler directly
+                await sendPoll.handler(
+                    this.runtime,
+                    message,
+                    state,
+                    {},
+                    this.messageManager.handleMessage.bind(this.messageManager)
+                );
+
+            } catch (error) {
+                elizaLogger.error('Error processing poll command:', error);
+                await ctx.reply('An error occurred while creating the poll. Please try again later.');
+            }
+        });
+
+        this.botInstance.on("message", async (ctx) => {
             try {
                 // Check group authorization first
                 if (!(await this.isGroupAuthorized(ctx))) {
@@ -137,23 +188,58 @@ export class TelegramClient {
             }
         });
 
-        this.bot.on("photo", (ctx) => {
+        this.botInstance.on("photo", (ctx) => {
             elizaLogger.log(
                 "📸 Received photo message with caption:",
                 ctx.message.caption
             );
         });
 
-        this.bot.on("document", (ctx) => {
+        this.botInstance.on("document", (ctx) => {
             elizaLogger.log(
                 "📎 Received document message:",
                 ctx.message.document.file_name
             );
         });
 
-        this.bot.catch((err, ctx) => {
+        this.botInstance.catch((err, ctx) => {
             elizaLogger.error(`❌ Telegram Error for ${ctx.updateType}:`, err);
             ctx.reply("An unexpected error occurred. Please try again later.");
+        });
+
+        // Add poll answer handler
+        this.botInstance.on('poll_answer', async (pollAnswer) => {
+            try {
+                elizaLogger.info("📊 Received poll answer:", {
+                    pollId: pollAnswer.pollAnswer.poll_id,
+                    userId: pollAnswer.from.id,
+                    options: pollAnswer.pollAnswer.option_ids
+                });
+
+                // If you need to track which option was most voted
+                if (pollAnswer.pollAnswer.option_ids && pollAnswer.pollAnswer.option_ids.length > 0) {
+                    elizaLogger.info("Selected options:", pollAnswer.pollAnswer.option_ids);
+
+                    // You can store this in your runtime or process it further
+                    // Note: You'll need to maintain a map of poll_id to poll options
+                    // if you want to know the actual text of the selected options
+                }
+            } catch (error) {
+                elizaLogger.error("Error handling poll answer:", error);
+            }
+        });
+
+        // Add poll update handler
+        this.botInstance.on('poll', (poll) => {
+            elizaLogger.info("Poll update received:", {
+                id: poll.poll.id,
+                question: poll.poll.question,
+                totalVotes: poll.poll.total_voter_count,
+                options: poll.poll.options.map(opt => ({
+                    text: opt.text,
+                    votes: opt.voter_count
+                }))
+            });
         });
     }
 
@@ -181,7 +267,7 @@ export class TelegramClient {
 
     public async stop(): Promise<void> {
         elizaLogger.log("Stopping Telegram bot...");
-        await this.bot.stop();
+        await this.botInstance.stop();
         elizaLogger.log("Telegram bot stopped");
     }
 }
