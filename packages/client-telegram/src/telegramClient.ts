@@ -150,13 +150,14 @@ export class TelegramClient {
                 }
 
                 const messageText = ('text' in ctx.message ? ctx.message.text : '') || '';
+                const isPollRequest = messageText.toLowerCase().includes('/poll') ||
+                                    messageText.toLowerCase().includes('send poll') ||
+                                    messageText.toLowerCase().includes('create poll') ||
+                                    messageText.toLowerCase().includes('make poll') ||
+                                    messageText.toLowerCase().includes('start poll');
 
-                // Check if this is a poll request
-                if (messageText.toLowerCase().includes('/poll') ||
-                    messageText.toLowerCase().includes('send poll') ||
-                    messageText.toLowerCase().includes('create poll') ||
-                    messageText.toLowerCase().includes('make poll') ||
-                    messageText.toLowerCase().includes('start poll')) {
+                if (isPollRequest) {
+                    elizaLogger.info("Poll request detected:", { messageText });
 
                     const message: Memory = {
                         id: stringToUuid(ctx.message.message_id.toString()),
@@ -164,20 +165,18 @@ export class TelegramClient {
                         roomId: stringToUuid(ctx.chat.id.toString()),
                         agentId: this.runtime.agentId,
                         content: {
-                            text: 'text' in ctx.message ? ctx.message.text : '',
+                            text: messageText,
                             ctx,
                             source: 'telegram',
-                            action: 'SEND_POLL'  // Explicitly set the action
+                            action: 'SEND_POLL'
                         },
                         createdAt: Date.now(),
                         embedding: getEmbeddingZeroVector()
                     };
 
-                    // Create initial state with SEND_POLL action
                     const state = await this.runtime.composeState(message);
-                    state.currentAction = 'SEND_POLL';  // Set the action in state
+                    state.currentAction = 'SEND_POLL';
 
-                    // Call the action handler directly
                     await sendPoll.handler(
                         this.runtime,
                         message,

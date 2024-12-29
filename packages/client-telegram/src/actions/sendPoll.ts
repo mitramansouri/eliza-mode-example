@@ -33,14 +33,24 @@ export const sendPoll = {
         }
     ]],
     validate: async (runtime: IAgentRuntime, message: Memory) => {
-        const isValid = message.content.action === 'SEND_POLL' ||
-                       message.content.text?.toLowerCase().includes('/poll') ||
-                       message.content.text?.toLowerCase().includes('/sendpoll') ||
-                       message.content.text?.toLowerCase().includes('create poll') ||
-                       message.content.text?.toLowerCase().includes('make poll') ||
-                       message.content.text?.toLowerCase().includes('start poll');
+        const messageText = message.content.text?.toLowerCase() || '';
+        const isValid = messageText.includes('/poll') ||
+                       messageText.includes('send poll') ||
+                       messageText.includes('create poll') ||
+                       messageText.includes('make poll') ||
+                       messageText.includes('start poll');
 
-        elizaLogger.info(`Poll command validation: ${isValid}, action: ${message.content.action}`);
+        elizaLogger.info(`Poll command validation:`, {
+            text: messageText,
+            isValid: isValid,
+            action: message.content.action
+        });
+
+        if (isValid) {
+            // Explicitly set the action when validated
+            message.content.action = 'SEND_POLL';
+        }
+
         return isValid;
     },
     handler: async (
@@ -51,92 +61,104 @@ export const sendPoll = {
         callback: HandlerCallback
     ) => {
         elizaLogger.info("🎯 SEND_POLL action handler triggered");
-        elizaLogger.debug("Message content:", message.content);
 
         try {
             const ctx = message.content.ctx as Context;
             if (!ctx || !ctx.chat) {
-                elizaLogger.error("Invalid context for poll creation");
+                elizaLogger.error("Invalid context for poll creation", { ctx });
                 throw new Error("Invalid context for poll creation");
             }
 
+            // Set the action explicitly
+            message.content.action = 'SEND_POLL';
+            state.currentAction = 'SEND_POLL';
+
             // Generate poll content using AI
             const pollContext = `You are ${runtime.character.name}.
-                    ${runtime.character.bio}
+                ${runtime.character.bio}
 
-                    Based on your personality and the conversation, create an engaging poll.
-                    Recent messages: ${state.recentMessages}
-                    Current message: ${message.content.text}
+                Based on your personality and the conversation, create an engaging poll.
+                Recent messages: ${state.recentMessages}
+                Current message: ${message.content.text}
 
-                    Create a poll that matches your character's style with:
-                    1. A question (max 300 characters)
-                    2. 2-5 answer options (IMPORTANT: each option MUST be under 100 characters)
+                Create a poll that matches your character's style with:
+                1. A question (max 300 characters)
+                2. 2-5 answer options (IMPORTANT: each option MUST be under 100 characters)
 
-                    Format:
-                    Question: [Your concise question here]
-                    - [Short option 1]
-                    - [Short option 2]
-                    - [Short option 3]
+                Format:
+                Question: [Your concise question here]
+                - [Short option 1]
+                - [Short option 2]
+                - [Short option 3]
 
-                    Keep your unique voice but be brief. Each option MUST be under 100 characters.`;
+                Keep your unique voice but be brief. Each option MUST be under 100 characters.`;
 
-            elizaLogger.info("Generating poll content for character:", {
-                character: runtime.character.name,
-                recentMessages: state.recentMessages,
-                currentMessage: message.content.text
-            });
+            elizaLogger.info("Generating poll with context:", { messageText: message.content.text });
             const aiResponse = await generateText({
                 runtime,
                 context: pollContext,
                 modelClass: ModelClass.SMALL
             });
 
-            // Parse the response to extract question and options
+            elizaLogger.info("AI Response:", aiResponse);
+
+            // Initialize pollData first
             const pollData = {
                 question: "",
                 options: [] as string[]
             };
 
+            // Parse the response
             const lines = aiResponse.split('\n')
                 .map(line => line.trim())
                 .filter(Boolean)
-                .filter(line => !line.toLowerCase().includes('*question:*') && !line.toLowerCase().includes('*options:*')); // Filter out headers
+                .filter(line => !line.toLowerCase().includes('*question:*') && !line.toLowerCase().includes('*options:*'));
 
-            if (lines.length >= 3) {
+            if (lines.length >= 2) {
                 pollData.question = lines[0].replace(/^(Question:|Q:|Poll:|\d+\.)\s*/i, '');
                 pollData.options = lines.slice(1)
-                    .map(line => line.replace(/^[-*•\d\.]\s*/, '')) // Remove bullets and numbers
+                    .map(line => line.replace(/^[-*•\d\.]\s*/, ''))
                     .filter(Boolean)
-                    .filter(line => line !== pollData.question) // Ensure option isn't the same as question
+                    .filter(line => line !== pollData.question)
                     .slice(0, 5);
             } else {
-                elizaLogger.error("Invalid poll format from AI");
-                throw new Error("Failed to generate valid poll options");
+                throw new Error("Invalid AI response format for poll");
             }
 
-            elizaLogger.info("Generated poll data:", pollData);
+            elizaLogger.info("Sending poll:", pollData);
 
-            // Send the poll
-            await ctx.telegram.sendPoll(
-                ctx.chat.id,
-                pollData.question,
-                pollData.options,
-                { is_anonymous: true }
-            );
+            try {
+                const sentPoll = await ctx.telegram.sendPoll(
+                    ctx.chat.id,
+                    pollData.question,
+                    pollData.options,
+                    { is_anonymous: true }
+                );
+                elizaLogger.info("Poll sent successfully:", { pollId: sentPoll.message_id });
 
-            elizaLogger.info("Poll sent successfully");
+                const response: Content = {
+                    text: "I've created a poll for you! Please vote.",
+                    action: "POLL_CREATED",
+                    source: "telegram"
+                };
 
-            const response: Content = {
-                text: "I've created a poll based on our conversation! Please vote.",
-                action: "POLL_CREATED",
-                source: "telegram"
-            };
+                await callback(response);
+                return true;
 
-            await callback(response);
-            return true;
+            } catch (sendError) {
+                elizaLogger.error("Failed to send poll:", {
+                    error: sendError.message,
+                    stack: sendError.stack,
+                    data: pollData
+                });
+                throw sendError;
+            }
 
         } catch (error) {
-            elizaLogger.error("❌ Error in SEND_POLL handler:", error);
+            elizaLogger.error("Error in poll handler:", {
+                error: error.message,
+                stack: error.stack
+            });
             throw error;
         }
     }
