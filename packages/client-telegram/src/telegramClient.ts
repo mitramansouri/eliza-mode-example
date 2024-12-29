@@ -4,6 +4,18 @@ import { IAgentRuntime, elizaLogger, Memory, stringToUuid, getEmbeddingZeroVecto
 import { MessageManager } from "./messageManager.ts";
 import { getOrCreateRecommenderInBe } from "./getOrCreateRecommenderInBe.ts";
 import { sendPoll } from "./actions/sendPoll.ts"; // Change from default to named import
+import { proceedPoll } from "./actions/proceedPoll.ts";
+
+interface PollOption {
+    text: string;
+    voter_count: number;
+}
+
+interface Poll {
+    id: number;
+    question: string;
+    options: PollOption[];
+}
 
 export class TelegramClient {
     private botInstance: Telegraf<Context>;
@@ -12,6 +24,7 @@ export class TelegramClient {
     private backend;
     private backendToken;
     private tgTrader;
+    private recentPoll: Poll | null = null;
 
     constructor(runtime: IAgentRuntime, botToken: string) {
         elizaLogger.log("📱 Constructing new TelegramClient...");
@@ -35,10 +48,15 @@ export class TelegramClient {
             this.setupMessageHandlers();
             this.setupShutdownHandlers();
 
-            // Register the action
-            elizaLogger.info("Registering SEND_POLL action...");
-            this.runtime.registerAction(sendPoll);
-            elizaLogger.info("SEND_POLL action registered successfully");
+            // Register actions
+            elizaLogger.info("Registering actions...");
+            this.runtime.registerAction({
+                ...sendPoll,
+                handler: async (runtime, message, state, options, callback) =>
+                    await sendPoll.handler(runtime, message, state, { ...options, botInstance: this.botInstance }, callback)
+            });
+            this.runtime.registerAction(proceedPoll);
+            elizaLogger.info("Actions registered successfully");
 
         } catch (error) {
             elizaLogger.error("❌ Failed to launch Telegram bot:", error);
@@ -150,6 +168,44 @@ export class TelegramClient {
                 }
 
                 const messageText = ('text' in ctx.message ? ctx.message.text : '') || '';
+
+                // Check for proceed command
+                if (messageText.toLowerCase().includes('/proceed')) {
+                    elizaLogger.info("Proceed command detected:", { messageText });
+
+                    const message: Memory = {
+                        id: stringToUuid(ctx.message.message_id.toString()),
+                        userId: stringToUuid(ctx.from.id.toString()),
+                        roomId: stringToUuid(ctx.chat.id.toString()),
+                        agentId: this.runtime.agentId,
+                        content: {
+                            text: messageText,
+                            ctx,
+                            source: 'telegram',
+                            action: 'PROCEED_POLL',
+                            recentPoll: this.recentPoll
+                        },
+                        createdAt: Date.now(),
+                        embedding: getEmbeddingZeroVector()
+                    };
+
+                    const state = await this.runtime.composeState(message);
+                    state.currentAction = 'PROCEED_POLL';
+
+                    await proceedPoll.handler(
+                        this.runtime,
+                        message,
+                        state,
+                        {},
+                        async (response: Content) => {
+                            elizaLogger.info("Sending proceed response:", response);
+                            await ctx.reply(response.text);
+                            return [];
+                        }
+                    );
+                    return;
+                }
+
                 const isPollRequest = messageText.toLowerCase().includes('/poll') ||
                                     messageText.toLowerCase().includes('send poll') ||
                                     messageText.toLowerCase().includes('create poll') ||
@@ -243,16 +299,20 @@ export class TelegramClient {
         });
 
         // Add poll update handler
-        this.botInstance.on('poll', (poll) => {
+        this.botInstance.on('poll', (pollUpdate) => {
             elizaLogger.info("Poll update received:", {
-                id: poll.poll.id,
-                question: poll.poll.question,
-                totalVotes: poll.poll.total_voter_count,
-                options: poll.poll.options.map(opt => ({
-                    text: opt.text,
-                    votes: opt.voter_count
-                }))
+                id: pollUpdate.poll.id,
+                options: pollUpdate.poll.options
             });
+
+            this.recentPoll = {
+                id: parseInt(pollUpdate.poll.id),
+                question: pollUpdate.poll.question,
+                options: pollUpdate.poll.options.map(opt => ({
+                    text: opt.text,
+                    voter_count: opt.voter_count || 0
+                }))
+            };
         });
     }
 

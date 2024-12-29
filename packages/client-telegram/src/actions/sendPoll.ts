@@ -134,7 +134,21 @@ export const sendPoll = {
                     pollData.options,
                     { is_anonymous: true }
                 );
-                elizaLogger.info("Poll sent successfully:", { pollId: sentPoll.message_id });
+
+                // Store poll data in state
+                state.recentPoll = {
+                    id: sentPoll.message_id,
+                    question: pollData.question,
+                    options: pollData.options.map(opt => ({
+                        text: opt,
+                        voter_count: 0
+                    }))
+                };
+
+                elizaLogger.info("Poll sent successfully:", {
+                    pollId: sentPoll.message_id,
+                    pollData: state.recentPoll
+                });
 
                 const response: Content = {
                     text: "I've created a poll for you! Please vote.",
