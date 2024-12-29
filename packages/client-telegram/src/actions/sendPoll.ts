@@ -34,7 +34,12 @@ export const sendPoll = {
     ]],
     validate: async (runtime: IAgentRuntime, message: Memory) => {
         const isValid = message.content.action === 'SEND_POLL' ||
-                       message.content.text?.toLowerCase().includes('/poll');
+                       message.content.text?.toLowerCase().includes('/poll') ||
+                       message.content.text?.toLowerCase().includes('/sendpoll') ||
+                       message.content.text?.toLowerCase().includes('create poll') ||
+                       message.content.text?.toLowerCase().includes('make poll') ||
+                       message.content.text?.toLowerCase().includes('start poll');
+
         elizaLogger.info(`Poll command validation: ${isValid}, action: ${message.content.action}`);
         return isValid;
     },

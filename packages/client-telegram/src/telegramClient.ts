@@ -112,7 +112,7 @@ export class TelegramClient {
                     roomId: stringToUuid(ctx.chat.id.toString()),
                     agentId: this.runtime.agentId,
                     content: {
-                        text: ctx.message.text,
+                        text: 'text' in ctx.message ? ctx.message.text : '',
                         ctx,
                         source: 'telegram',
                         action: 'SEND_POLL'  // Explicitly set the action
@@ -149,29 +149,43 @@ export class TelegramClient {
                     return;
                 }
 
-                if (this.tgTrader) {
-                    const userId = ctx.from?.id.toString();
-                    const username =
-                        ctx.from?.username || ctx.from?.first_name || "Unknown";
-                    if (!userId) {
-                        elizaLogger.warn(
-                            "Received message from a user without an ID."
-                        );
-                        return;
-                    }
-                    try {
-                        await getOrCreateRecommenderInBe(
-                            userId,
-                            username,
-                            this.backendToken,
-                            this.backend
-                        );
-                    } catch (error) {
-                        elizaLogger.error(
-                            "Error getting or creating recommender in backend",
-                            error
-                        );
-                    }
+                const messageText = ('text' in ctx.message ? ctx.message.text : '') || '';
+
+                // Check if this is a poll request
+                if (messageText.toLowerCase().includes('/poll') ||
+                    messageText.toLowerCase().includes('send poll') ||
+                    messageText.toLowerCase().includes('create poll') ||
+                    messageText.toLowerCase().includes('make poll') ||
+                    messageText.toLowerCase().includes('start poll')) {
+
+                    const message: Memory = {
+                        id: stringToUuid(ctx.message.message_id.toString()),
+                        userId: stringToUuid(ctx.from.id.toString()),
+                        roomId: stringToUuid(ctx.chat.id.toString()),
+                        agentId: this.runtime.agentId,
+                        content: {
+                            text: 'text' in ctx.message ? ctx.message.text : '',
+                            ctx,
+                            source: 'telegram',
+                            action: 'SEND_POLL'  // Explicitly set the action
+                        },
+                        createdAt: Date.now(),
+                        embedding: getEmbeddingZeroVector()
+                    };
+
+                    // Create initial state with SEND_POLL action
+                    const state = await this.runtime.composeState(message);
+                    state.currentAction = 'SEND_POLL';  // Set the action in state
+
+                    // Call the action handler directly
+                    await sendPoll.handler(
+                        this.runtime,
+                        message,
+                        state,
+                        {},
+                        this.messageManager.handleMessage.bind(this.messageManager)
+                    );
+                    return;
                 }
 
                 await this.messageManager.handleMessage(ctx);
