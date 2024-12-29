@@ -1,5 +1,6 @@
 import { Context } from "telegraf";
 import { Action, Memory, State, IAgentRuntime, HandlerCallback, elizaLogger, Content } from "@ai16z/eliza";
+import { sendPoll } from "./sendPoll";
 
 interface PollOption {
     text: string;
@@ -35,14 +36,6 @@ export const proceedPoll = {
     },
     handler: async (runtime: IAgentRuntime, message: Memory, state: State, options: any, callback: HandlerCallback) => {
         try {
-            const ctx = message.content.ctx as Context;
-            if (!ctx || !ctx.chat) {
-                throw new Error("Invalid context for proceed command");
-            }
-
-            elizaLogger.info("Processing poll results");
-
-            // Get the most recent poll from state
             const recentPoll = message.content.recentPoll as Poll;
             if (!recentPoll) {
                 const response: Content = {
@@ -53,8 +46,6 @@ export const proceedPoll = {
                 await callback(response);
                 return false;
             }
-
-            elizaLogger.info("Found poll to process:", recentPoll);
 
             // Get the winning option
             const winningOption = recentPoll.options.reduce((prev, current) =>
@@ -72,8 +63,22 @@ export const proceedPoll = {
             };
 
             await callback(response);
-            return true;
 
+            // Trigger a new poll based on the winning option
+            const newPollMessage: Memory = {
+                ...message,
+                content: {
+                    text: `Create a poll about: ${winningOption.text}`,
+                    ctx: message.content.ctx,
+                    source: "telegram",
+                    action: "SEND_POLL"
+                }
+            };
+
+            const newState = await runtime.composeState(newPollMessage);
+            await sendPoll.handler(runtime, newPollMessage, newState, options, callback);
+
+            return true;
         } catch (error) {
             elizaLogger.error("Error processing poll results:", error);
             const errorResponse: Content = {
