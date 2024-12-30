@@ -11,6 +11,11 @@ interface Poll {
     question: string;
     options: PollOption[];
 }
+interface ExtendedContent extends Content {
+    ctx?: Context;
+    recentPoll?: Poll;
+    pollResult?: string;
+}
 export const proceedPoll = {
     name: "PROCEED_POLL",
     description: "Process the results of the most recent poll",
@@ -33,8 +38,10 @@ export const proceedPoll = {
     handler: async (runtime: IAgentRuntime, message: Memory, state: State, options: any, callback: HandlerCallback) => {
         try {
             const recentPoll = message.content.recentPoll as Poll;
+            const ctx = message.content.ctx as Context;
+
             if (!recentPoll) {
-                const response: Content = {
+                const response: ExtendedContent = {
                     text: "No recent poll found to process.",
                     action: "PROCEED_POLL_ERROR",
                     source: "telegram"
@@ -42,13 +49,23 @@ export const proceedPoll = {
                 await callback(response);
                 return false;
             }
+
+            // Close the poll
+            try {
+                await ctx.telegram.stopPoll(ctx.chat.id, recentPoll.id);
+                elizaLogger.info("Poll closed successfully:", recentPoll.id);
+            } catch (error) {
+                elizaLogger.error("Error closing poll:", error);
+                // Continue processing even if closing fails
+            }
+
             // Get the winning option
             const winningOption = recentPoll.options.reduce((prev, current) =>
                 (current.voter_count > prev.voter_count) ? current : prev
             );
             elizaLogger.info("Winning option:", winningOption);
             // Send the winning option announcement
-            const response: Content = {
+            const response: ExtendedContent = {
                 text: `The winning option was: "${winningOption.text}" with ${winningOption.voter_count} votes.`,
                 action: "PROCEED_POLL_SUCCESS",
                 source: "telegram",
@@ -65,7 +82,7 @@ export const proceedPoll = {
                 });
 
                 if (generatedContent) {
-                    const generatedText: Content = {
+                    const generatedText: ExtendedContent = {
                         text: generatedContent,
                         action: "PROCEED_POLL_TRANSITION",
                         source: "telegram"
@@ -92,7 +109,7 @@ export const proceedPoll = {
             return true;
         } catch (error) {
             elizaLogger.error("Error processing poll results:", error);
-            const errorResponse: Content = {
+            const errorResponse: ExtendedContent = {
                 text: "Error processing poll results: " + error.message,
                 action: "PROCEED_POLL_ERROR",
                 source: "telegram"
