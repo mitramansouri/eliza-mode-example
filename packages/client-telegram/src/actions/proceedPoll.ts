@@ -7,7 +7,8 @@ interface PollOption {
     voter_count: number;
 }
 interface Poll {
-    id: number;
+    id: string;
+    messageId: number;
     question: string;
     options: PollOption[];
 }
@@ -50,13 +51,33 @@ export const proceedPoll = {
                 return false;
             }
 
-            // Close the poll
+            // First, stop the poll to get final vote counts
             try {
-                await ctx.telegram.stopPoll(ctx.chat.id, recentPoll.id);
-                elizaLogger.info("Poll closed successfully:", recentPoll.id);
+                await ctx.telegram.stopPoll(ctx.chat.id, recentPoll.messageId);
+                elizaLogger.info("Poll closed successfully:", recentPoll.messageId);
             } catch (error) {
                 elizaLogger.error("Error closing poll:", error);
-                // Continue processing even if closing fails
+                const response: ExtendedContent = {
+                    text: "Failed to close the poll. Please try again.",
+                    action: "PROCEED_POLL_ERROR",
+                    source: "telegram"
+                };
+                await callback(response);
+                return false;
+            }
+
+            // Check for tied votes
+            const maxVotes = Math.max(...recentPoll.options.map(opt => opt.voter_count));
+            const leadingOptions = recentPoll.options.filter(opt => opt.voter_count === maxVotes);
+
+            if (leadingOptions.length > 1) {
+                const response: ExtendedContent = {
+                    text: `There's currently a tie between ${leadingOptions.map(opt => `"${opt.text}"`).join(' and ')} with ${maxVotes} votes each. Please create a new poll to break the tie.`,
+                    action: "PROCEED_POLL_TIE",
+                    source: "telegram"
+                };
+                await callback(response);
+                return false;
             }
 
             // Get the winning option

@@ -135,6 +135,11 @@ export const sendPoll = {
                     { is_anonymous: true }
                 );
 
+                // Save the message ID
+                if (options.savePollMessageId) {
+                    options.savePollMessageId(sentPoll.message_id.toString());
+                }
+
                 // Store poll data in state
                 state.recentPoll = {
                     id: sentPoll.message_id,

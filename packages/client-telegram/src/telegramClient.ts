@@ -12,7 +12,8 @@ interface PollOption {
 }
 
 interface Poll {
-    id: number;
+    id: string;
+    messageId: string;
     question: string;
     options: PollOption[];
 }
@@ -25,6 +26,7 @@ export class TelegramClient {
     private backendToken;
     private tgTrader;
     private recentPoll: Poll | null = null;
+    private recentPollMessageId: string = '0';
 
     constructor(runtime: IAgentRuntime, botToken: string) {
         elizaLogger.log("📱 Constructing new TelegramClient...");
@@ -145,12 +147,17 @@ export class TelegramClient {
                 const state = await this.runtime.composeState(message);
                 state.currentAction = 'SEND_POLL';  // Set the action in state
 
-                // Call the action handler directly
-                await sendPoll.handler(
+                // Store the context in a way that sendPoll can access it
+                const pollResponse = await sendPoll.handler(
                     this.runtime,
                     message,
                     state,
-                    {},
+                    {
+                        botInstance: this.botInstance,
+                        savePollMessageId: (messageId: string) => {
+                            this.recentPollMessageId = messageId;
+                        }
+                    },
                     this.messageManager.handleMessage.bind(this.messageManager)
                 );
 
@@ -183,7 +190,10 @@ export class TelegramClient {
                             ctx,
                             source: 'telegram',
                             action: 'PROCEED_POLL',
-                            recentPoll: this.recentPoll
+                            recentPoll: {
+                                ...this.recentPoll,
+                                messageId: this.recentPollMessageId
+                            }
                         },
                         createdAt: Date.now(),
                         embedding: getEmbeddingZeroVector()
@@ -299,16 +309,18 @@ export class TelegramClient {
         });
 
         // Add poll update handler
-        this.botInstance.on('poll', (pollUpdate) => {
+        this.botInstance.on('poll', async (ctx) => {
             elizaLogger.info("Poll update received:", {
-                id: pollUpdate.poll.id,
-                options: pollUpdate.poll.options
+                id: ctx.poll.id,
+                options: ctx.poll.options
             });
 
+            // Store poll data without messageId for now
             this.recentPoll = {
-                id: parseInt(pollUpdate.poll.id),
-                question: pollUpdate.poll.question,
-                options: pollUpdate.poll.options.map(opt => ({
+                id: ctx.poll.id,
+                messageId: '0',
+                question: ctx.poll.question,
+                options: ctx.poll.options.map(opt => ({
                     text: opt.text,
                     voter_count: opt.voter_count || 0
                 }))
