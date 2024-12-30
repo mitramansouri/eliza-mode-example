@@ -11,6 +11,13 @@ interface Poll {
     question: string;
     options: PollOption[];
 }
+
+interface ExtendedContent extends Content {
+    ctx?: Context;
+    recentPoll?: Poll;
+    pollResult?: string;
+}
+
 export const proceedPoll = {
     name: "PROCEED_POLL",
     description: "Process the results of the most recent poll",
@@ -33,6 +40,8 @@ export const proceedPoll = {
     handler: async (runtime: IAgentRuntime, message: Memory, state: State, options: any, callback: HandlerCallback) => {
         try {
             const recentPoll = message.content.recentPoll as Poll;
+            const ctx = message.content.ctx as Context;
+
             if (!recentPoll) {
                 const response: Content = {
                     text: "No recent poll found to process.",
@@ -42,6 +51,16 @@ export const proceedPoll = {
                 await callback(response);
                 return false;
             }
+
+            // Close the poll
+            try {
+                await ctx.telegram.stopPoll(ctx.chat.id, recentPoll.id);
+                elizaLogger.info("Poll closed successfully:", recentPoll.id);
+            } catch (error) {
+                elizaLogger.error("Error closing poll:", error);
+                // Continue processing even if closing fails
+            }
+
             // Get the winning option
             const winningOption = recentPoll.options.reduce((prev, current) =>
                 (current.voter_count > prev.voter_count) ? current : prev
