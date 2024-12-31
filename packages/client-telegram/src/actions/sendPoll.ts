@@ -21,6 +21,20 @@ interface PollResponse {
     options: string[];
 }
 
+// Add type to State interface (if not already defined elsewhere)
+interface PollState extends State {
+    recentPoll?: StoredPoll;
+    currentAction?: string;
+    // ... other state properties
+}
+
+// Add at the top of the file with other interfaces
+interface StoredPoll {
+    id: number;
+    question: string;
+    options: { text: string; voter_count: number; }[];
+}
+
 export const sendPoll = {
     name: "SEND_POLL",
     description: "Creates and sends a poll in Telegram",
@@ -35,6 +49,7 @@ export const sendPoll = {
     validate: async (runtime: IAgentRuntime, message: Memory) => {
         const messageText = message.content.text?.toLowerCase() || '';
         const isValid = messageText.includes('/poll') ||
+                       messageText.includes('/proceed') ||
                        messageText.includes('send poll') ||
                        messageText.includes('create poll') ||
                        messageText.includes('make poll') ||
@@ -56,7 +71,7 @@ export const sendPoll = {
     handler: async (
         runtime: IAgentRuntime,
         message: Memory,
-        state: State,
+        state: PollState,
         options: any,
         callback: HandlerCallback
     ) => {
@@ -128,6 +143,40 @@ export const sendPoll = {
             elizaLogger.info("Sending poll:", pollData);
 
             try {
+                const messageText = message.content.text?.toLowerCase() || '';
+
+                // When a tie is detected, store the poll data and resend it
+                if (messageText.includes('/proceed') && state.recentPoll) {
+                    elizaLogger.info("Resending poll due to tie");
+
+                    try {
+                        const sentPoll = await ctx.telegram.sendPoll(
+                            ctx.chat.id,
+                            state.recentPoll.question,
+                            state.recentPoll.options.map(opt => opt.text),
+                            { is_anonymous: true }
+                        );
+
+                        // Update state with new poll ID
+                        state.recentPoll.id = sentPoll.message_id;
+
+                        const response: Content = {
+                            text: "There's currently a tie! Use /proceed to vote again on the same poll to break the tie.",
+                            action: "PROCEED_POLL_TIE",
+                            source: "telegram"
+                        };
+
+                        await callback(response);
+                        return true;
+                    } catch (sendError) {
+                        elizaLogger.error("Failed to resend poll:", {
+                            error: sendError.message,
+                            stack: sendError.stack
+                        });
+                        throw sendError;
+                    }
+                }
+
                 const sentPoll = await ctx.telegram.sendPoll(
                     ctx.chat.id,
                     pollData.question,
