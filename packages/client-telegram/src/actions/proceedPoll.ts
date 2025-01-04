@@ -195,4 +195,4 @@ export const proceedPoll = {
             return false;
         }
     }
-} as Action;
+} as Action;1
